@@ -1,0 +1,401 @@
+https://uidai.nseitexams.com/UIDAI/LoginAction_input.action;jsessionid=4F6E2EE00DAEE8C1FD313E71AC1AAA9B
+
+package GST;
+
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.UUID;
+
+import org.apache.xmlbeans.impl.xb.xsdschema.ListDocument.List;
+import org.openqa.selenium.By;
+import org.openqa.selenium.Dimension;
+import org.openqa.selenium.OutputType;
+import org.openqa.selenium.TakesScreenshot;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.interactions.SendKeysAction;
+import org.openqa.selenium.io.FileHandler;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
+
+import Public_Announcement.XLUtility;
+import io.github.bonigarcia.wdm.WebDriverManager;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+
+public class Final_GSTIN {
+
+    public static void main(String[] args) throws InterruptedException, IOException {
+        // Setup WebDriver using WebDriverManager for Chrome
+        WebDriverManager.chromedriver().setup();
+        WebDriver driver = new ChromeDriver();
+        driver.manage().window().maximize();
+
+        // Generate timestamp for file naming
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy_MM_dd-HH-MM-SS"));
+        System.out.println("Timestamp: " + timestamp);
+        
+        String excelpathfonPAN = "./data/Pan number list.xlsx";
+        XLUtility dataxlForPan = new XLUtility(excelpathfonPAN);
+        String excelpathForPAN = "./data/PAN_DATA-" + timestamp + ".xlsx";    
+        XLUtility dataxlForPandata = new XLUtility(excelpathForPAN);
+       
+        int totalRowsforpan = dataxlForPan.getRowCount("Pan Number");
+        
+        driver.get("https://services.gst.gov.in/services/searchtpbypan");
+        Thread.sleep(2000);
+        
+         for (int row = 1; row <= totalRowsforpan; row++) {
+            // Get Pan number from column 1 (index 0) of the current row
+            String PanNumber = dataxlForPan.getcellData("Pan Number", row, 0); // Adjust column index as necessary
+
+            // Input the Pan number into the search field          
+            WebElement PAN_Input = driver.findElement(By.xpath("//*[@id=\"for_gstin\"]"));
+            PAN_Input.clear();
+            PAN_Input.sendKeys(PanNumber); 
+            System.out.println("Processed Pan: " + PanNumber);           
+            Thread.sleep(1000);  // Adjust this as needed based on performance and rate limits
+        
+        System.out.println("Refreshing CAPTCHA image...");
+        Thread.sleep(2000);
+        WebElement refreshCaptchaButton = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[3]/div/div/div/table/tbody/tr[2]/td/button")); 
+        refreshCaptchaButton.click();
+     // Wait for CAPTCHA image to load and capture it
+        processCaptcha(driver, timestamp);
+        ProcessDataFetchingForPan(driver, timestamp,dataxlForPandata);
+        
+         }
+        // CallGSTIN(driver,timestamp,excelpathForPAN);
+    }
+         
+        
+     
+	public static void processCaptcha(WebDriver driver, String timestamp) throws InterruptedException, IOException {
+        // Retry mechanism with a limit
+        int maxRetries = 10;
+        for (int retry = 0; retry < maxRetries; retry++) {
+            System.out.println("Attempt " + (retry + 1) + " to solve CAPTCHA.");
+            String captchaCode = fetchCaptchaAndSolve(driver, timestamp);
+
+            if (captchaCode != null) {
+                // Enter CAPTCHA and submit
+                WebElement captchaInput = driver.findElement(By.xpath("//*[@id=\"fo-captcha\"]"));
+                captchaInput.sendKeys(captchaCode);
+                WebElement submitButton = driver.findElement(By.xpath("//*[@id=\"lotsearch\"]"));
+                submitButton.click();
+
+                // Wait and check if CAPTCHA was valid
+                if (isCaptchaValid(driver)) {
+                    System.out.println("CAPTCHA solved successfully!");
+                    return;
+                } else {
+                    System.out.println("Invalid CAPTCHA, retrying...");
+                }
+            }
+        }
+        System.out.println("Failed to solve CAPTCHA after " + maxRetries + " attempts.");
+    }
+
+    public static String fetchCaptchaAndSolve(WebDriver driver, String timestamp) throws InterruptedException, IOException {
+        // Wait for CAPTCHA image to load fully
+        WebDriverWait wait = new WebDriverWait(driver, 10);
+        WebElement captchaElement = wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath("//*[@id='imgCaptcha']")));
+        
+        // Ensure the CAPTCHA image has a unique src before processing
+        String oldSrc = captchaElement.getAttribute("src");
+        refreshCaptcha(driver, captchaElement);
+        wait.until(ExpectedConditions.not(ExpectedConditions.attributeToBe(captchaElement, "src", oldSrc)));
+        
+        // Capture only the CAPTCHA image
+        File captchaImage = captchaElement.getScreenshotAs(OutputType.FILE);
+        String filePath = "./testdata/captcha_" + timestamp + ".png";
+        FileHandler.copy(captchaImage, new File(filePath));
+        System.out.println("CAPTCHA image captured: " + filePath);
+
+        // Upload CAPTCHA to azcaptcha and get response
+        OkHttpClient client = new OkHttpClient().newBuilder().build();
+        RequestBody body = new MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("key", "xnbhwyfwpl7n2zgrrtyd8mvhc6fjmkxq")
+                .addFormDataPart("method", "post")
+                .addFormDataPart("file", filePath,
+                        RequestBody.create(MediaType.parse("application/octet-stream"), new File(filePath))).build();
+
+        Request request = new Request.Builder()
+                .url("http://azcaptcha.com/in.php")
+                .method("POST", body).build();
+        Response response = client.newCall(request).execute();
+
+        if (response.isSuccessful()) {
+            String responseBody = response.body().string();
+            String imageId = responseBody.split("\\|")[1];
+            System.out.println("Captcha image ID: " + imageId);
+
+            // Retry mechanism for fetching CAPTCHA solution
+            String resultBody = null;
+            for (int i = 0; i < 10; i++) {  // Retry 10 times with a delay
+                Thread.sleep(2000);  // Wait before checking
+                OkHttpClient client2 = new OkHttpClient().newBuilder().build();
+                Request request2 = new Request.Builder()
+                        .url("http://azcaptcha.com/res.php?key=xnbhwyfwpl7n2zgrrtyd8mvhc6fjmkxq&action=get&id=" + imageId)
+                        .method("GET", null).build();
+                Response response2 = client2.newCall(request2).execute();
+
+                if (response2.isSuccessful()) {
+                    resultBody = response2.body().string();
+                    if (!resultBody.contains("CAPCHA_NOT_READY")) {
+                        break;  // Solution found
+                    }
+                }
+            }
+
+            if (resultBody != null && resultBody.contains("OK")) {
+                String captchaCode = resultBody.split("\\|")[1].trim();
+                System.out.println("Captcha code: " + captchaCode);
+                return captchaCode;
+            } else {
+                System.err.println("CAPTCHA solving failed.");
+            }
+        } else {
+            System.err.println("Failed to upload CAPTCHA image. Response code: " + response.code());
+        }
+        return null;
+    }
+
+    
+    public static boolean isCaptchaValid(WebDriver driver) {
+        WebDriverWait wait = new WebDriverWait(driver, 5);  // Wait for 5 seconds
+        try {
+            // Check if the CAPTCHA error message element is visible
+            wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath("//*[contains(text(),'Enter valid letters shown in the image below')]")));
+            return false;  // CAPTCHA was incorrect
+        } catch (Exception e) {
+            return true;  // CAPTCHA was correct or the error element didn't appear
+        }
+    }
+
+
+    public static void refreshCaptcha(WebDriver driver, WebElement captchaElement) throws InterruptedException {
+        // Refresh CAPTCHA and wait for the new image to load
+        WebElement refreshCaptchaButton = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[3]/div/div/div/table/tbody/tr[2]/td/button"));
+        refreshCaptchaButton.click();
+        Thread.sleep(2000);  // Wait for CAPTCHA to refresh
+    }
+    
+    public static void ProcessDataFetchingForGSTIN(WebDriver driver,String timestamp) throws IOException
+    {
+           String excelpath = "./data/CIN_DATA-"+timestamp+".xlsx";	
+    	XLUtility dataxl = new XLUtility(excelpath);
+    	 
+    	dataxl.setCellData("GSTIN_DATA", 0, 0,"GSTIN/UIN Number");
+    	dataxl.setCellData("GSTIN_DATA", 0, 1,"Legal Name of Business");
+    	dataxl.setCellData("GSTIN_DATA", 0, 2,"Trade Name");
+    	dataxl.setCellData("GSTIN_DATA", 0, 3,"Effective Date of registration");
+    	dataxl.setCellData("GSTIN_DATA", 0, 4,"Constitution of Business");
+    	dataxl.setCellData("GSTIN_DATA", 0, 5,"GSTIN / UIN Status");
+    	dataxl.setCellData("GSTIN_DATA", 0, 6,"Taxpayer Type");
+    	dataxl.setCellData("GSTIN_DATA", 0, 7,"Administrative Office");
+    	dataxl.setCellData("GSTIN_DATA", 0, 8,"Other Office");
+    	dataxl.setCellData("GSTIN_DATA", 0, 9,"Principal Place of Business");
+    	dataxl.setCellData("GSTIN_DATA", 0, 10,"Whether Aadhaar Authenticated?");
+    	dataxl.setCellData("GSTIN_DATA", 0, 11,"Whether e-KYC Verified?");
+    	dataxl.setCellData("GSTIN_DATA", 0, 12,"Additional Trade Name");
+    	
+    	dataxl.setCellData("GSTIN_DATA", 0, 13,"Nature Of Core Business Activity");
+    	dataxl.setCellData("GSTIN_DATA", 0, 14,"Nature of Business Activities");
+    	dataxl.setCellData("GSTIN_DATA", 0, 15,"Goods HSN");
+    	dataxl.setCellData("GSTIN_DATA", 0, 16,"Goods Description");
+    	dataxl.setCellData("GSTIN_DATA", 0, 17,"Service HSN");
+    	dataxl.setCellData("GSTIN_DATA", 0, 18,"Service Description");
+    	 
+    	
+    	int lastRow2 = dataxl.getRowCount("GSTIN_DATA");
+   	 lastRow2++;
+   	 WebElement CIN = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[1]/div/h4"));
+     WebElement Name = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[1]/div/div[1]/p[2]")); 
+     WebElement TrName = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[1]/div/div[2]/p[2]"));
+     WebElement EffectiveDate = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[1]/div/div[3]/p[2]"));
+     WebElement Constitution = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[2]/div/div[1]/p[2]"));
+     WebElement GSTIN = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[2]/div/div[2]/p[2]"));
+     WebElement Taxpayer = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[2]/div/div[3]/p[2]"));
+     WebElement Administrative = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[3]/div/div[1]"));
+     WebElement Other = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[3]/div/div[2]"));
+     WebElement Principal = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[3]/div/div[3]/p[2]"));
+     WebElement Whether_Aadhaar = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[4]/div/div[1]"));
+     WebElement Whether_e_KYC = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[2]/div[4]/div/div[2]/p[2]"));
+     
+     WebElement Nature_Of_Core_Business_Activity = driver.findElement(By.xpath("//*[@id=\"ntcrbs\"]/div"));
+     WebElement Nature_Of_Business_Activity = driver.findElement(By.xpath("//*[@id=\"collapseTwo\"]/div"));
+       // Locate the table containing "Dealing In Goods and Services"
+      
+     String CINnumber = CIN.getText().replace("Search Result based on GSTIN/UIN :", "");
+     String LegalNameofBusiness = Name.getText();
+     String Trade_name = TrName.getText();
+     String EffectiveDateOF = EffectiveDate.getText();
+     String Constitution1 =  Constitution.getText();
+     String GSTIN_Status = GSTIN .getText();
+     String Taxpayer1 = Taxpayer.getText();
+     String Administrative1 = Administrative.getText().replace("Administrative Office","");
+     String Other1 = Other.getText().replace("Other Office","");
+     String Principal1 = Principal.getText().replace("Principal Place of Business","");
+     String Whether_Aadhaar1 = Whether_Aadhaar.getText().replace("Whether Aadhaar Authenticated?","");
+     String Whether_e_KYC1 = Whether_e_KYC.getText();
+     String NOBA = Nature_Of_Business_Activity.getText();
+     String NOCBA = Nature_Of_Core_Business_Activity.getText();
+     
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 0, CINnumber);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 1, LegalNameofBusiness);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 2, Trade_name);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 3, EffectiveDateOF);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 4, Constitution1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 5, GSTIN_Status);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 6, Taxpayer1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 7, Administrative1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 8, Other1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 9, Principal1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 10, Whether_Aadhaar1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 11, Whether_e_KYC1);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 13, NOCBA);
+     dataxl.setCellData("GSTIN_DATA", lastRow2, 14, NOBA);
+     
+     WebElement Dealing_Table = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[5]/div/div/div/table/tbody"));
+
+     // Find all rows within the table body
+   
+     java.util.List<WebElement> rows = Dealing_Table.findElements(By.tagName("tr"));
+
+     // Print the number of rows
+     System.out.println("Number of rows in the Dealing Table: " + rows.size());
+
+     // Iterate through each row
+     for (int j = 2; j <=rows.size(); j++) {
+        WebElement Goods_HSN = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[5]/div/div/div/table/tbody/tr["+j+"]/td[1]"));
+        WebElement Goods_Description = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[5]/div/div/div/table/tbody/tr["+j+"]/td[2]"));
+        WebElement Service_HSN2 = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[5]/div/div/div/table/tbody/tr[2]/td["+j+"]"));
+        WebElement Service_Description2 = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div[5]/div/div/div/table/tbody/tr["+j+"]/td[4]"));
+        String GH= Goods_HSN.getText();
+        String GD=Goods_Description.getText();
+        String GH2=Service_HSN2.getText();
+        String GD2=Service_Description2.getText();
+        dataxl.setCellData("GSTIN_DATA", lastRow2, 15, GH);
+        dataxl.setCellData("GSTIN_DATA", lastRow2, 16, GD);
+        dataxl.setCellData("GSTIN_DATA", lastRow2, 17, GH2);
+        dataxl.setCellData("GSTIN_DATA", lastRow2, 18, GD2);
+        lastRow2++;
+         }
+     
+    
+     
+     
+     System.out.println("Data saved successfuly....>");
+     
+     
+     
+     
+    }
+
+    public static void ProcessDataFetchingForPan(WebDriver driver, String timestamp,XLUtility dataxlForPandata) throws IOException, InterruptedException
+    {
+        
+    	dataxlForPandata.setCellData("PAN_DATA", 0, 0, "SR.NO");
+    	dataxlForPandata.setCellData("PAN_DATA", 0, 1, "PAN Number");
+    	dataxlForPandata.setCellData("PAN_DATA", 0, 2, "GSTIN/UIN");
+    	dataxlForPandata.setCellData("PAN_DATA", 0, 3, "GSTIN/UIN Status");
+    	dataxlForPandata.setCellData("PAN_DATA", 0, 4, "State");
+    	dataxlForPandata.setCellData("PAN_DATA", 0, 5, "Reason");
+        
+        int lastRow2 = dataxlForPandata.getRowCount("PAN_DATA");
+        lastRow2++;
+        
+        String source = driver.getPageSource();
+        if (source.contains("No records found.")) {
+            WebElement PAN_number = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div/div/h4"));
+            String PANnumber = PAN_number.getText().replace("Search Result based on PAN :", "");
+            String Errormsg = "No records found.";
+            String GSTIN = "Null";
+            // Save "No records found" message and PAN number
+            dataxlForPandata.setCellData("PAN_DATA", lastRow2, 1, PANnumber);
+            dataxlForPandata.setCellData("PAN_DATA", lastRow2, 5, Errormsg);
+            dataxlForPandata.setCellData("PAN_DATA", lastRow2, 2, GSTIN);
+            // Exit the method here, skipping the rest of the code
+            return;
+        }
+             java.util.List<WebElement> tablesize = driver.findElements(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[5]/div[3]/div/div/table/tbody/tr"));
+            int Tablesize = tablesize.size();
+            System.out.println("The table size is...-"+Tablesize);
+            for (int i=1;i<=Tablesize;i++)
+            {
+        WebElement PAN_number = driver.findElement(By.xpath("//*[@id=\"lottable\"]/div/div/h4"));     
+        WebElement SRNO = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[5]/div[3]/div/div/table/tbody/tr["+i+"]/td[1]"));
+        WebElement GSTIN_UIN = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[5]/div[3]/div/div/table/tbody/tr["+i+"]/td[2]")); 
+        WebElement Status = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[5]/div[3]/div/div/table/tbody/tr["+i+"]/td[3]"));
+        WebElement State = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[5]/div[3]/div/div/table/tbody/tr["+i+"]/td[4]"));
+          
+        String PANnumber = PAN_number.getText().replace("Search Result based on PAN :", "");
+        String srno = SRNO.getText();
+        String GSTIN = GSTIN_UIN.getText();
+        String status = Status.getText();
+        String state = State.getText();
+        
+        dataxlForPandata.setCellData("PAN_DATA", lastRow2, 1, PANnumber);
+        dataxlForPandata.setCellData("PAN_DATA", lastRow2, 0, srno);
+        dataxlForPandata.setCellData("PAN_DATA", lastRow2, 2, GSTIN);
+        dataxlForPandata.setCellData("PAN_DATA", lastRow2, 3, status); 
+        dataxlForPandata.setCellData("PAN_DATA", lastRow2, 4, state);
+        
+        System.out.println("Data saved successfully....>");
+        System.out.println("Calling GSTIN data method.....>");
+        lastRow2++;
+            }
+        
+    }
+/*
+    public static void CallGSTIN(WebDriver driver, String timestamp, String excelpathForPAN) throws IOException, InterruptedException { 
+        String excelpath = excelpathForPAN;
+        XLUtility dataxl = new XLUtility(excelpath);
+        int totalRows = dataxl.getRowCount("PAN_DATA");
+       
+        // Navigate to the GST search page
+        driver.navigate().to("https://services.gst.gov.in/services/searchtp");
+        
+        Thread.sleep(2000);  // Ensure the page has fully loaded
+        for (int row = 1; row <= totalRows; row++) {
+            // Get GSTIN number from column 1 (index 0) of the current row
+            String gstinNumber = dataxl.getcellData("PAN_DATA", row, 2); // Adjust column index as necessary
+            
+            if (gstinNumber.contains("Null")) {
+                System.out.println("Skipping GSTIN: " + gstinNumber);
+                continue; // Skip this record and move to the next iteration
+            }
+            
+            // Input the GSTIN number into the search field
+            WebElement gstinField = driver.findElement(By.xpath("//*[@id='for_gstin']"));
+            gstinField.clear();  // Clear the field before entering new data
+            gstinField.sendKeys(gstinNumber);
+          
+            // Debugging info
+            System.out.println("Processed GSTIN: " + gstinNumber);
+
+            // Introduce a small delay between iterations
+            Thread.sleep(1000);  // Adjust this as needed based on performance and rate limits
+        
+            System.out.println("Refreshing CAPTCHA image...");
+            Thread.sleep(2000);
+            
+            WebElement refreshCaptchaButton = driver.findElement(By.xpath("/html/body/div[2]/div[2]/div/div[2]/div/div[1]/form/div[3]/div/div/div/table/tbody/tr[2]/td/button")); 
+            refreshCaptchaButton.click();
+
+            // Wait for CAPTCHA image to load and capture it
+            processCaptcha(driver, timestamp);
+            ProcessDataFetchingForGSTIN(driver, timestamp);
+        }
+    }
+*/
+   
+}

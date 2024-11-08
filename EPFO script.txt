@@ -1,0 +1,247 @@
+ package GST;
+
+import java.io.File; 
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List; 
+import org.openqa.selenium.By;
+import org.openqa.selenium.OutputType;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.io.FileHandler;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
+import Public_Announcement.XLUtility;
+import io.github.bonigarcia.wdm.WebDriverManager;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+
+public class EPFO_Automation {
+	  public static void main(String[] args) throws InterruptedException, IOException {
+	        // Setup WebDriver using WebDriverManager for Chrome
+	        WebDriverManager.chromedriver().setup();
+	        WebDriver driver = new ChromeDriver();
+	        driver.manage().window().maximize();
+
+	        // Generate timestamp for file naming
+	        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS"));
+	        System.out.println("Timestamp: " + timestamp);
+	        String excelpath = "./data/Establishment_Name sheet.xlsx";
+	        XLUtility dataxl = new XLUtility(excelpath);
+	        int totalRows = dataxl.getRowCount("GSTIN_DATA");
+	        // Navigate to the GST search page
+	        driver.get("https://unifiedportal-emp.epfindia.gov.in/publicPortal/no-auth/misReport/home/loadEstSearchHome");
+	        Thread.sleep(2000);  // Ensure the page has fully loaded
+	        
+	        for (int row = 1; row <= totalRows; row++) {
+	        	
+	            String Establishment_Name = dataxl.getcellData("GSTIN_DATA", row, 2); // Adjust column index as necessary
+
+	            // Input the GSTIN number into the search field
+	            WebElement gstinField = driver.findElement(By.xpath("//*[@id=\"estName\"]"));
+	            gstinField.clear();  // Clear the field before entering new data
+	            gstinField.sendKeys(Establishment_Name);
+	            // Debugging info
+	            System.out.println("Processed Establishment_Name : " + Establishment_Name);
+	            Thread.sleep(1000);  // Adjust this as needed based on performance and rate limits	
+	            processCaptcha(driver, timestamp,Establishment_Name);
+	        ProcessDataFetching (driver,timestamp,Establishment_Name);
+	    }
+	    }
+	    public static void processCaptcha(WebDriver driver, String timestamp,String Establishment_Name) throws InterruptedException, IOException {
+	        // Retry mechanism with a limit
+	        int maxRetries = 10;
+	        for (int retry = 0; retry < maxRetries; retry++) {
+	            System.out.println("Attempt " + (retry + 1) + " to solve CAPTCHA.");
+	            String captchaCode = fetchCaptchaAndSolve(driver, timestamp,Establishment_Name);
+
+	            if (captchaCode != null) {
+	                // Enter CAPTCHA and submit
+	                WebElement captchaInput = driver.findElement(By.xpath("//*[@id=\"captcha\"]"));
+	                captchaInput.sendKeys(captchaCode);
+	                WebElement submitButton = driver.findElement(By.xpath("//*[@id=\"searchEmployer\"]"));
+	                submitButton.click();
+
+	                // Wait and check if CAPTCHA was valid
+	                if (isCaptchaValid(driver)) {
+	                    System.out.println("CAPTCHA solved successfully!");
+	                    return;
+	                } else {
+	                    System.out.println("Invalid CAPTCHA, retrying...");
+	                }
+	            }  //*[@id="capImg"]
+	        }
+	        System.out.println("Failed to solve CAPTCHA after " + maxRetries + " attempts.");
+	    }
+
+	    public static String fetchCaptchaAndSolve(WebDriver driver, String timestamp,String Establishment_Name) throws InterruptedException, IOException {
+	        WebDriverWait wait = new WebDriverWait(driver, 10);
+	        System.out.println("Fetching CAPTCHA...");
+
+	        WebElement captchaElement = wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath("//*[@id='capImg']")));
+	        System.out.println("CAPTCHA element loaded");
+
+	        // Store the initial CAPTCHA src
+	        String initialSrc = captchaElement.getAttribute("src");
+
+	        // Retry mechanism to reload the CAPTCHA if it doesn't change
+	        int retries = 0;
+	        while (captchaElement.getAttribute("src").equals(initialSrc) && retries < 3) {
+	            // Attempt to refresh the CAPTCHA image by clicking a refresh button or reloading the page
+	            try {
+	                WebElement refreshButton = driver.findElement(By.id("refreshCaptchaButton")); // Replace with actual refresh button ID if available
+	                refreshButton.click();
+	            } catch (Exception e) {
+	                driver.navigate().refresh(); // Reload the page if no refresh button exists
+	                wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath("//*[@id='capImg']")));
+	                captchaElement = driver.findElement(By.xpath("//*[@id='capImg']")); // Re-locate CAPTCHA element after refresh
+	            }
+	            retries++;
+	        }
+
+	        // Capture CAPTCHA image after retries
+	        if (!captchaElement.getAttribute("src").equals(initialSrc)) {
+	            File captchaImage = captchaElement.getScreenshotAs(OutputType.FILE);
+	            String filePath = "./testdata/captcha_" + timestamp + ".png";
+	            FileHandler.copy(captchaImage, new File(filePath));
+	            System.out.println("CAPTCHA image captured: " + filePath);
+	            WebElement gstinField = driver.findElement(By.xpath("//*[@id=\"estName\"]"));
+	            gstinField.clear();  // Clear the field before entering new data
+	            gstinField.sendKeys(Establishment_Name);
+	            // Upload CAPTCHA to azcaptcha and get response
+	            OkHttpClient client = new OkHttpClient().newBuilder().build();
+	            RequestBody body = new MultipartBody.Builder().setType(MultipartBody.FORM)
+	                    .addFormDataPart("key", "xnbhwyfwpl7n2zgrrtyd8mvhc6fjmkxq")
+	                    .addFormDataPart("method", "post")
+	                    .addFormDataPart("file", filePath,
+	                            RequestBody.create(MediaType.parse("application/octet-stream"), new File(filePath))).build();
+
+	            Request request = new Request.Builder()
+	                    .url("http://azcaptcha.com/in.php")
+	                    .method("POST", body).build();
+	            Response response = client.newCall(request).execute();
+
+	            if (response.isSuccessful()) {
+	                String responseBody = response.body().string();
+	                String imageId = responseBody.split("\\|")[1];
+	                System.out.println("CAPTCHA image ID: " + imageId);
+
+	                // Retry mechanism for fetching CAPTCHA solution
+	                String resultBody = null;
+	                for (int i = 0; i < 10; i++) {  // Retry 10 times with a delay
+	                    Thread.sleep(2000);  // Wait before checking
+	                    OkHttpClient client2 = new OkHttpClient().newBuilder().build();
+	                    Request request2 = new Request.Builder()
+	                            .url("http://azcaptcha.com/res.php?key=xnbhwyfwpl7n2zgrrtyd8mvhc6fjmkxq&action=get&id=" + imageId)
+	                            .method("GET", null).build();
+	                    Response response2 = client2.newCall(request2).execute();
+
+	                    if (response2.isSuccessful()) {
+	                        resultBody = response2.body().string();
+	                        if (!resultBody.contains("CAPCHA_NOT_READY")) {
+	                            break;  // Solution found
+	                        }
+	                    }
+	                }
+
+	                if (resultBody != null && resultBody.contains("OK")) {
+	                	String captchaCode = resultBody.split("\\|")[1].trim().toUpperCase();
+	                    System.out.println("CAPTCHA code: " + captchaCode);
+	                    return captchaCode;
+	                } else {
+	                    System.err.println("CAPTCHA solving failed.");
+	                }
+	            } else {
+	                System.err.println("Failed to upload CAPTCHA image. Response code: " + response.code());
+	            }
+	        } else {
+	            System.err.println("Failed to load a new CAPTCHA image after retries.");
+	        }
+	        return null;
+	    }
+
+	    public static boolean isCaptchaValid(WebDriver driver) {
+	        WebDriverWait wait = new WebDriverWait(driver, 5);
+	        try {
+	            // Check if the CAPTCHA error message element is visible
+	            wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath("//*[contains(text(),'Please enter valid captcha.')]")));
+	            return false;  // CAPTCHA was incorrect
+	        } catch (Exception e) {
+	            return true;  // CAPTCHA was correct or the error element didn't appear
+	        }
+	    }
+	
+
+	   
+	    
+	    public static void ProcessDataFetching(WebDriver driver,String timestamp,String Establishment_Name) throws IOException
+	    {
+	           String excelpath = "./data/EPFO_Data_"+timestamp+".xlsx";	
+	    	XLUtility dataxl = new XLUtility(excelpath);
+	    	 WebDriverWait wait = new WebDriverWait(driver, 10);
+	         boolean matchFound = false;
+	      // Loop through each page until a match is found or no more pages are available
+	         while (!matchFound) {
+	             System.out.println("Searching for exact Establishment_Name: " + Establishment_Name);
+
+	             // Wait for the table to load and fetch all rows
+	             List<WebElement> rows = wait.until(ExpectedConditions.visibilityOfAllElementsLocatedBy(By.xpath("//*[@id='example']/tbody/tr")));
+
+	             // Loop through each row and check cells for an exact match
+	             for (WebElement row : rows) {
+	                 List<WebElement> cells = row.findElements(By.tagName("td"));
+
+	                 // Check if any cell has exact text match with `Establishment_Name`
+	                 for (WebElement cell : cells) {
+	                     if (cell.getText().trim().equalsIgnoreCase(Establishment_Name.trim())) {
+	                         System.out.println("Exact match found: " + row.getText());
+	                         matchFound = true;
+
+	                         // Capture data to Excel after finding the match
+	                         dataxl.setCellData("Epfo_Data", 0, 0, "Establishment ID");
+	                         dataxl.setCellData("Epfo_Data", 0, 1, "Establishment Name");
+	                         dataxl.setCellData("Epfo_Data", 0, 2, "Address");
+	                         dataxl.setCellData("Epfo_Data", 0, 3, "Office Name");
+                              int lastrow3 = dataxl.getRowCount("Epfo_Data");
+                              lastrow3++;
+	                         // Retrieve and store the data for each column in the row
+	                         dataxl.setCellData("Epfo_Data", lastrow3, 0, cells.get(0).getText()); // Establishment ID
+	                         dataxl.setCellData("Epfo_Data", lastrow3, 1, cells.get(1).getText()); // Establishment Name
+	                         dataxl.setCellData("Epfo_Data", lastrow3, 2, cells.get(2).getText()); // Address
+	                         dataxl.setCellData("Epfo_Data", lastrow3, 3, cells.get(3).getText()); // Office Name
+
+	                         break;
+	                     }
+	                 }
+	                 if (matchFound) {
+	                     break;
+	                 }
+	             }
+
+	             // Check for pagination if match was not found on current page
+	             if (!matchFound) {
+	                 try {
+	                     WebElement nextButton = driver.findElement(By.xpath("//a[contains(text(), 'Next')]"));
+	                     if (nextButton.isDisplayed() && nextButton.isEnabled()) {
+	                         nextButton.click();
+	                         // Wait for the new page to load
+	                         wait.until(ExpectedConditions.stalenessOf(rows.get(0))); // Wait for table to refresh
+	                     } else {
+	                         System.out.println("No more pages. No matching record found for: " + Establishment_Name);
+	                         break;
+	                     }
+	                 } catch (Exception e) {
+	                     System.out.println("No 'Next' button found or no more pages. Exiting search.");
+	                     break;
+	                 }
+	             }
+	         }
+	     }
+}
+
