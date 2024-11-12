@@ -1,0 +1,101 @@
+package ITAT;
+
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+
+public class ExcelToJsonConverter {
+    public static void main(String[] args) {
+        String excelFilePath = "./data/json.xlsx";  // Specify your file path here
+        String jsonFilePath = "./data/output.json";
+
+        try (FileInputStream fis = new FileInputStream(excelFilePath);
+             Workbook workbook = new XSSFWorkbook(fis)) {
+
+            Sheet sheet = workbook.getSheetAt(0); // Access the first sheet
+
+            ObjectMapper mapper = new ObjectMapper();
+            ArrayNode recordsArray = mapper.createArrayNode(); // Array to hold each row as a JSON object
+
+            for (Row row : sheet) {
+                // Skip the row if it's empty or if it’s a header row
+                if (row == null || row.getCell(0) == null || row.getRowNum() == 0) continue;
+
+                // Retrieve values from specific cells in the row
+                int numberOfConstituency = getIntCellValue(row.getCell(0)); // A column
+                String numberOfPollingStation = getStringCellValue(row.getCell(1)); // B column (keeps text like "263 A")
+                int male = getIntCellValue(row.getCell(2)); // C column
+                int female = getIntCellValue(row.getCell(3)); // D column
+                int tg = getIntCellValue(row.getCell(4)); // E column
+                int total = getIntCellValue(row.getCell(5)); // F column
+
+                // Create JSON object for the current row
+                ObjectNode rowJson = mapper.createObjectNode();
+                rowJson.put("numberOfConstituency", numberOfConstituency);
+
+                // Ensure that the polling station number is stored as a string
+                rowJson.put("numberOfPollingStation", numberOfPollingStation);
+
+                ObjectNode totalElectors = mapper.createObjectNode();
+                totalElectors.put("male", male);
+                totalElectors.put("female", female);
+                totalElectors.put("tg", tg);
+                totalElectors.put("total", total);
+
+                rowJson.set("totalElectors", totalElectors);
+
+                // Add the row JSON object to the array
+                recordsArray.add(rowJson);
+            }
+
+            // Write JSON array to file
+            mapper.writerWithDefaultPrettyPrinter().writeValue(new File(jsonFilePath), recordsArray);
+            System.out.println("Oy Onkar JSON file created successfully! zali bg ");
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Helper method to safely retrieve integer values from cells
+    private static int getIntCellValue(Cell cell) {
+        if (cell == null) {
+            return 0; // Default to 0 if cell is empty
+        }
+
+        switch (cell.getCellType()) {
+            case NUMERIC:
+                // If it's numeric, cast it to an integer (this drops the decimal part)
+                return (int) cell.getNumericCellValue();
+            case STRING:
+                // If it's a string, return 0 (or handle this case differently if needed)
+                return 0;
+            default:
+                return 0;
+        }
+    }
+
+    // Helper method to retrieve string values from cells
+    private static String getStringCellValue(Cell cell) {
+        if (cell == null) {
+            return ""; // Default to an empty string if the cell is empty
+        }
+
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue(); // Return the full string (e.g., "263 A")
+            case NUMERIC:
+                // For numeric values, return the value as a string (ensure it's a whole number)
+                return String.valueOf((int) cell.getNumericCellValue()); // Convert to integer string if needed
+            default:
+                return ""; // Return empty string for unsupported types
+        }
+    }
+}
